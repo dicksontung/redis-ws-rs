@@ -15,6 +15,11 @@ futures = "0.3.4"
 log = "0.4.8"
 config = "0.10.1"
 redis = "0.15.1"
-bus = "2.2.2"
-chashmap = "2.2.2"
 uuid = { version="0.8.1", features = ["v4"]}
+dashmap = "3.4.4"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
