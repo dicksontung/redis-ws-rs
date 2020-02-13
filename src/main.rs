@@ -12,6 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::WebSocketStream;
 use tungstenite::protocol::Message;
 use uuid::Uuid;
+use config::Config;
 
 struct ReferenceMaps {
     // key: channel_id, val: [session_ids]
@@ -34,7 +35,32 @@ impl ReferenceMaps {
 
 type StreamMap = DashMap<String, SplitSink<WebSocketStream<TcpStream>, Message>>;
 
-fn bind_session_to_room(
+#[tokio::main]
+async fn main() {
+    let mut settings = Config::default();
+    settings
+        .merge(config::File::with_name("config/config.yaml"))
+        .unwrap()
+        .merge(config::Environment::with_prefix("SOCKET"))
+        .unwrap();
+    let refm = Arc::new(ReferenceMaps::new());
+    let redis_addr = format!("redis://{}:{}/",
+                              &settings.get_str("redis.host").unwrap(),
+                              &settings.get_str("redis.port").unwrap()
+    );
+    tokio::spawn(redis_sub(refm.clone(), redis_addr));
+    let addr = "0.0.0.0:".to_string() + &settings.get_str("socket.port").unwrap();
+    let _ = env_logger::try_init();
+    // Create the event loop and TCP listener we'll accept connections on.
+    let try_socket = TcpListener::bind(&addr).await;
+    let mut listener = try_socket.expect("Failed to bind");
+    info!("Listening on: {}", addr);
+    while let Ok((stream, _)) = listener.accept().await {
+        tokio::spawn(accept_connection(stream, refm.clone()));
+    }
+}
+
+fn bind_session_to_channel(
     refm: Arc<ReferenceMaps>,
     session_id: &str,
     channel_id: &str,
@@ -105,27 +131,6 @@ async fn send(refm: Arc<ReferenceMaps>, channel_id: &str, payload: &str) {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let mut settings = config::Config::default();
-    settings
-        .merge(config::File::with_name("config/config.yaml"))
-        .unwrap()
-        .merge(config::Environment::with_prefix("SOCKET"))
-        .unwrap();
-    let refm = Arc::new(ReferenceMaps::new());
-    tokio::spawn(redis_sub(refm.clone()));
-    let addr = "0.0.0.0:".to_string() + &settings.get_str("socket.port").unwrap();
-    let _ = env_logger::try_init();
-    // Create the event loop and TCP listener we'll accept connections on.
-    let try_socket = TcpListener::bind(&addr).await;
-    let mut listener = try_socket.expect("Failed to bind");
-    info!("Listening on: {}", addr);
-    while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(accept_connection(stream, refm.clone()));
-    }
-}
-
 async fn accept_connection(stream: TcpStream, refm: Arc<ReferenceMaps>) {
     let addr = stream
         .peer_addr()
@@ -141,7 +146,7 @@ async fn accept_connection(stream: TcpStream, refm: Arc<ReferenceMaps>) {
         addr, session_id
     );
     let (write, _read) = ws_stream.split();
-    bind_session_to_room(
+    bind_session_to_channel(
         refm,
         &session_id.to_string(),
         "5c886c69ca50950001362635.5cb69d4d85c0790001b2fdff.message",
@@ -149,9 +154,9 @@ async fn accept_connection(stream: TcpStream, refm: Arc<ReferenceMaps>) {
     )
 }
 
-async fn redis_sub(refm: Arc<ReferenceMaps>) {
+async fn redis_sub(refm: Arc<ReferenceMaps>, redis_addr: String) {
     let client =
-        redis::Client::open("redis://127.0.0.1:6379/").expect("Error opening redis client");
+        redis::Client::open(redis_addr).expect("Error opening redis client");
     let mut con = client
         .get_connection()
         .expect("Error getting redis connection");
